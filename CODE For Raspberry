@@ -1,0 +1,100 @@
+import cv2
+import mediapipe as mp
+import math
+
+# ================= CHANGE YOUR ESP32 IP HERE =================
+ESP32_URL = "http://192.168.1.82/stream"
+# ============================================================
+
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=2,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
+
+finger_tips = [8, 12, 16, 20]
+finger_pips = [6, 10, 14, 18]
+thumb_tip = 4
+thumb_mcp = 2
+wrist = 0
+
+cap = cv2.VideoCapture(ESP32_URL)
+
+if not cap.isOpened():
+    print("ESP32 Camera not connected")
+    exit()
+
+def calculate_distance(p1, p2):
+    return math.sqrt(
+        (p1.x - p2.x) ** 2 +
+        (p1.y - p2.y) ** 2 +
+        (p1.z - p2.z) ** 2
+    )
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        continue
+
+    frame = cv2.flip(frame, 1)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    results = hands.process(rgb)
+
+    left_count = 0
+    right_count = 0
+    left_state = "Unknown"
+    right_state = "Unknown"
+
+    if results.multi_hand_landmarks and results.multi_handedness:
+        for lm, handed in zip(results.multi_hand_landmarks, results.multi_handedness):
+
+            label = handed.classification[0].label
+            is_left = label == "Left"
+
+            mp_drawing.draw_landmarks(frame, lm, mp_hands.HAND_CONNECTIONS)
+
+            landmarks = lm.landmark
+
+            thumb = landmarks[thumb_tip].x > landmarks[thumb_mcp].x if is_left else landmarks[thumb_tip].x < landmarks[thumb_mcp].x
+            count = 1 if thumb else 0
+
+            for t, p in zip(finger_tips, finger_pips):
+                if landmarks[t].y < landmarks[p].y:
+                    count += 1
+
+            total = 0
+            for tip in [thumb_tip] + finger_tips:
+                total += calculate_distance(landmarks[wrist], landmarks[tip])
+
+            avg = total / 5
+            size = calculate_distance(landmarks[wrist], landmarks[5])
+            norm = avg / size if size else 0
+
+            state = "Open" if norm > 0.7 else "Closed"
+
+            if is_left:
+                left_count = count
+                left_state = state
+            else:
+                right_count = count
+                right_state = state
+
+    cv2.putText(frame, f"Left: {left_count} | {left_state}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+
+    cv2.putText(frame, f"Right: {right_count} | {right_state}", (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+
+    cv2.imshow("ESP32 Hand Gesture AI", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
+hands.close()
